@@ -13,7 +13,7 @@ import anthropic
 from pydantic import BaseModel, Field
 
 from . import db, ratings
-from .config import GEMINI_API_KEY, GEMINI_MODEL, MODEL, OPENAI_API_KEY, OPENAI_MODEL, RULES_PATH
+from .config import GEMINI_API_KEY, GEMINI_FALLBACKS, GEMINI_MODEL, MODEL, OPENAI_API_KEY, OPENAI_MODEL, RULES_PATH
 
 
 class Claim(BaseModel):
@@ -278,10 +278,32 @@ def _inline_schema(schema):
 def _gemini(user: str, schema, system=SYSTEM):
     from google import genai
     from google.genai import types
-    resp = genai.Client(api_key=GEMINI_API_KEY).models.generate_content(
-        model=GEMINI_MODEL, contents=user,
-        config=types.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
-                                           response_json_schema=_inline_schema(schema)))
+    # keep a reference (a discarded client closes mid-request); cap waiting so a busy free tier
+    # drops Gemini from the round instead of holding up the whole panel
+    client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(
+        timeout=90_000, retry_options=types.HttpRetryOptions(attempts=4, initial_delay=3, max_delay=12,
+                                               http_status_codes=[429, 500, 502, 503, 504])))
+    import time
+    config = types.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
+                                         response_json_schema=_inline_schema(schema))
+    resp, last_err = None, None
+    for model in [GEMINI_MODEL] + [m for m in GEMINI_FALLBACKS if m != GEMINI_MODEL]:
+        for attempt in range(2):
+            try:
+                resp = client.models.generate_content(model=model, contents=user, config=config)
+                _gemini.last_model = model
+                break
+            except Exception as e:
+                last_err, msg = e, str(e)
+                if "RESOURCE_EXHAUSTED" in msg or "429" in msg or "404" in msg or "NOT_FOUND" in msg:
+                    break                        # this model's free quota is used up (or it's gone): next model
+                if "503" not in msg and "UNAVAILABLE" not in msg:
+                    raise                        # a real error, not a capacity problem
+                time.sleep(5)                    # "high demand": wait briefly, then try once more
+        if resp is not None:
+            break
+    if resp is None:
+        raise last_err
     if not resp.text:
         raise RuntimeError("Gemini returned no answer")
     return schema.model_validate_json(resp.text)
@@ -431,6 +453,7 @@ def _collective(base_prompt, draft_schema, negotiation_schema, ballot_schema, ki
         disc["skipped"] = f"Only {AGENT_NAMES[live[0]]} was available, so this is its analysis alone."
         return drafts[live[0]], disc
 
+    revised = {}
     try:
         # Round 2 - negotiate and revise
         stage(f"Round 2 · agents reading each other's {whats}, challenging and revising…")
@@ -463,6 +486,8 @@ def _collective(base_prompt, draft_schema, negotiation_schema, ballot_schema, ki
         if len(ballots) < 2:
             raise RuntimeError("fewer than two agents voted")
         disc["ballots"] = {a: b.model_dump() for a, b in ballots.items()}
+        if "gemini" in disc["agents"] and getattr(_gemini, "last_model", None):
+            disc["agents"]["gemini"]["model"] = _gemini.last_model
         final, tallies = _assemble(draft_schema, revised, ballots, kind)
         disc.update(tallies)
         disc["rationale"] = (f"No moderator: each of the {len(ballots)} agents voted on every part. A part is kept with a "
@@ -471,6 +496,14 @@ def _collective(base_prompt, draft_schema, negotiation_schema, ballot_schema, ki
         return final, disc
     except Exception as e:
         disc["error"] = f"{type(e).__name__}: {e}"
+        if len(revised) >= 2:  # negotiation finished but voting didn't: keep the negotiated result
+            best = revised.get("claude") or next(iter(revised.values()))
+            disc["error"] = f"Voting couldn't finish ({type(e).__name__}); showing the analysis revised after negotiation."
+            if kind == "match":
+                probs = {a: min(max(r.red_win_prob, 0.0), 1.0) for a, r in revised.items()}
+                best.red_win_prob = round(_median(list(probs.values())), 3)
+                disc["ai_probs"], disc["ai_median"] = probs, best.red_win_prob
+            return best, disc
         return drafts.get("claude") or next(iter(drafts.values())), disc
 
 

@@ -796,133 +796,119 @@ def impact(number, effect):
     return " · ".join(parts)
 
 
+def until_text(row):
+    if row["duration"] != "today":
+        return "until cleared"
+    return "until midnight"
+
+
 with tab_live:
-    st.html('<div class="vs-scout-h">Live updates<span>what\'s happening right now - ratings, predictions and picks adjust</span></div>')
+    st.html('<div class="vs-scout-h">Live updates<span>something changed at the event? Tell the app and every rating, '
+            'prediction and pick list adjusts</span></div>')
     fn = st.session_state.setdefault("fb_n", 0)
-    pending = st.session_state.get("fb_pending")
-    if not pending:
-        with st.container(border=True):
-            st.html('<div class="vs-lbl" style="margin-top:0">Quick update</div>')
-            q1, q2 = st.columns([2, 1])
-            q_team = q1.selectbox("Team", numbers, index=None, key=f"fb_team_{fn}", placeholder="Pick a team…",
-                                  format_func=lambda n: f"{n} · {by_number[n]['name'] or ''}", label_visibility="collapsed")
-            q_dur = q2.selectbox("Applies", list(feedback.DURATIONS), key=f"fb_qdur_{fn}", format_func=feedback.DURATIONS.get,
-                                 label_visibility="collapsed")
-            cols = st.columns(3)
-            for i, (lab, eff) in enumerate(feedback.QUICK):
-                if cols[i % 3].button(lab, key=f"fb_q_{eff}_{fn}", width="stretch", disabled=not q_team):
-                    st.session_state.fb_pending = [dict(team=q_team, effect=eff, duration=q_dur,
-                                                        text=f"{q_team}: {lab}", summary=lab)]
-                    st.rerun()
-            st.html('<div class="vs-lbl">Or describe it</div>')
-            txt_slot = st.container()
-            said = mic.mic(key=f"fb_mic_{fn}")
-            if said:
-                st.session_state[f"fb_text_{fn}"] = f'{st.session_state.get(f"fb_text_{fn}", "")} {said}'.strip()
-            fb_text = txt_slot.text_area("Update", key=f"fb_text_{fn}", label_visibility="collapsed", height=80,
-                                        placeholder='e.g. "80001C robot is broken today" · "295A fixed their intake"')
-            if st.button("Read update", width="stretch", disabled=not fb_text.strip(),
-                         help="Claude reads it and shows you exactly what it will change before anything is applied"):
-                with st.spinner("Reading the update…"):
-                    parsed = feedback.parse(fb_text.strip(), numbers)
-                if parsed:
-                    st.session_state.fb_pending = [dict(team=u.team_number, effect=u.effect, duration=u.duration,
-                                                        text=fb_text.strip(), summary=u.summary) for u in parsed]
-                    st.rerun()
-                else:
-                    st.warning("Couldn't find a team from this event in that update - include the team number, e.g. 80001C.")
-    else:
-        with st.container(border=True):
-            st.html('<div class="vs-lbl" style="margin-top:0;color:#F5B95A">Check before applying</div>')
-            for i, u in enumerate(pending):
-                c1, c2, c3 = st.columns([1, 1.3, 1.1], vertical_alignment="center")
-                c1.markdown(f"**{u['team']}**  \n<span style='color:#9AA0AB;font-size:.85rem'>“{ui.escape(u['text'][:60])}”</span>",
-                            unsafe_allow_html=True)
-                u["effect"] = c2.selectbox("Effect", EFFECT_OPTS, index=EFFECT_OPTS.index(u["effect"]), key=f"pend_eff_{fn}_{i}",
-                                           format_func=effect_label, label_visibility="collapsed")
-                u["duration"] = c3.selectbox("Applies", list(feedback.DURATIONS), key=f"pend_dur_{fn}_{i}",
-                                             index=list(feedback.DURATIONS).index(u["duration"]),
-                                             format_func=feedback.DURATIONS.get, label_visibility="collapsed")
-                st.caption(f"→ {impact(u['team'], u['effect'])}")
-            fb_author = st.text_input("Your name", key="fb_author", placeholder="Your name (optional)", label_visibility="collapsed")
-            a1, a2 = st.columns(2)
-            if a1.button(f"Apply {'update' if len(pending) == 1 else f'{len(pending)} updates'}", type="primary", width="stretch"):
-                for u in pending:
-                    feedback.insert(conn, EID, u["team"], u["effect"], u["duration"], u["text"], u["summary"], fb_author or None)
-                st.session_state["fb_msg"] = " · ".join(f"{u['team']}: {feedback.EFFECTS[u['effect']][0]}" for u in pending)
-                st.session_state.fb_pending = None
-                st.session_state.fb_n = fn + 1
-                bump(); st.rerun()
-            if a2.button("Cancel", width="stretch"):
-                st.session_state.fb_pending = None; st.rerun()
     if msg := st.session_state.pop("fb_msg", None):
-        st.success(f"Applied: {msg}")
+        st.success(msg)
 
+    # 1. What's in effect right now
     items = feedback.list_for_event(conn, EID)
-    active = [x for x in items if x["status"] == "active"]
-    removed = [x for x in items if x["status"] == "removed"]
-    if not items:
-        st.caption("No updates yet. Post one above when something changes at the event.")
+    in_effect = [x for x in items if x["in_effect"]]
+    with st.container(border=True):
+        st.html('<div class="vs-lbl" style="margin-top:0">In effect now</div>')
+        if not in_effect:
+            st.caption("Nothing right now - every team is rated on its match results alone.")
+        for x in in_effect:
+            label, mult, good = feedback.EFFECTS[x["effect"]]
+            color = "#6BD58A" if good else "#FF8A8D"
+            since = datetime.fromisoformat(x["created_at"]).astimezone().strftime("%-I:%M %p")
+            c1, c2 = st.columns([5, 1], vertical_alignment="center")
+            c1.html(f'<div style="line-height:1.45"><b style="font-size:1.05rem">{ui.escape(x["number"])}</b> '
+                    f'<span class="vs-chip" style="background:{color}22;color:{color};border:1px solid {color}55">{label}</span>'
+                    f'<span style="color:#B4B8C2">{feedback.PLAIN[x["effect"]]} · {until_text(x)} · since {since}</span></div>')
+            if c2.button("Clear", key=f"fb_clear_{x['id']}", width="stretch",
+                         help=f"Put {x['number']} back to normal ratings (you can restore it from History)"):
+                feedback.clear_team(conn, EID, x["team_id"])
+                st.session_state.fb_msg = f"{x['number']} is back to normal ratings."
+                bump(); st.rerun()
 
-    def fb_card(x):
+    # 2. Report a change: just say it - read and saved at once, with undo
+    st.html('<div class="vs-lbl">Report a change</div>')
+    said = mic.mic(key=f"fb_mic_{fn}")
+    typed = st.chat_input('What changed? e.g. "80001C robot is broken today" · "295A fixed their intake"', key=f"fb_in_{fn}")
+    update = (typed or said or "").strip()
+    if update:
+        with st.spinner("Reading the update…"):
+            parsed = feedback.parse(update, numbers)
+        if not parsed:
+            st.warning(f"Couldn't find a team from this event in “{update}”. Include the team number, e.g. 80001C.")
+        else:
+            ids, lines = [], []
+            for u in parsed:
+                before = impact(u.team_number, u.effect)
+                ids.append(feedback.insert(conn, EID, u.team_number, u.effect, u.duration, update, u.summary,
+                                           st.session_state.get("fb_author") or None))
+                lines.append(f"{u.team_number} marked {feedback.EFFECTS[u.effect][0]} "
+                             f"{'until midnight' if u.duration == 'today' else 'until cleared'} ({before})")
+            st.session_state.fb_last = dict(ids=ids, text="Saved: " + " · ".join(lines))
+            st.session_state.fb_n = fn + 1
+            bump(); st.rerun()
+    if last := st.session_state.get("fb_last"):
+        c1, c2 = st.columns([6, 1], vertical_alignment="center")
+        c1.success(last["text"])
+        if c2.button("Undo", key="fb_undo", width="stretch"):
+            for fid in last["ids"]:
+                feedback.set_status(conn, fid, "removed")
+            st.session_state.fb_last = None
+            st.session_state.fb_msg = "Undone - that update was removed."
+            bump(); st.rerun()
+
+    # 4. History: everything ever posted, with edit / remove / restore
+    def fb_card(x, state):
         label, mult, good = feedback.EFFECTS[x["effect"]]
         color = "#6BD58A" if good else "#FF8A8D" if good is False else "#B4B8C2"
-        if x["status"] == "removed":
-            state = "removed"
-        elif x["expired"]:
-            state = "expired"
-        elif x["in_effect"]:
-            state = "in effect"
-        elif x["effect"] == "info":
-            state = "note"
-        else:
-            state = "overridden by a newer update"
         when = datetime.fromisoformat(x["created_at"]).astimezone().strftime("%b %-d, %-I:%M %p")
         edited = f' · edited {len(x["revisions"])}×' if x["revisions"] else ""
-        dim = "opacity:.55;" if state in ("removed", "expired", "overridden by a newer update") else ""
-        st.html(f'<div class="vs-panel" style="padding:14px 18px;margin-bottom:6px;{dim}">'
-                f'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-                f'<b style="font-size:1.1rem">{ui.escape(x["number"])}</b>'
-                f'<span class="vs-chip" style="background:{color}22;color:{color};border:1px solid {color}55">{label}'
-                f'{f" ×{mult}" if mult not in (0, 1) else ""}</span>{ui.chip(state)}'
-                f'<span style="color:#8B909B;font-size:.85rem">{feedback.DURATIONS[x["duration"]]} · {when}'
+        st.html(f'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+                f'<b>{ui.escape(x["number"])}</b>'
+                f'<span class="vs-chip" style="background:{color}22;color:{color};border:1px solid {color}55">{label}</span>'
+                f'{ui.chip(state)}<span style="color:#8B909B;font-size:.85rem">{when}'
                 f'{" · " + ui.escape(x["author"]) if x["author"] else ""}{edited}</span></div>'
-                f'<div style="margin-top:6px">“{ui.escape(x["raw_text"])}”</div></div>')
+                f'<div style="margin-top:4px;color:#B4B8C2">“{ui.escape(x["raw_text"])}”</div>')
 
-    for x in active:
-        fb_card(x)
-        b1, b2, _ = st.columns([1, 1, 6])
-        if b1.button("Edit", key=f"fb_edit_{x['id']}"):
-            st.session_state.fb_editing = x["id"]
-        if b2.button("Remove", key=f"fb_rm_{x['id']}"):
-            feedback.set_status(conn, x["id"], "removed"); bump(); st.rerun()
-        if st.session_state.get("fb_editing") == x["id"]:
-            with st.form(f"fb_form_{x['id']}"):
-                new_text = st.text_area("Update text", x["raw_text"])
-                e1, e2 = st.columns(2)
-                new_eff = e1.selectbox("Effect", EFFECT_OPTS, index=EFFECT_OPTS.index(x["effect"]), format_func=effect_label)
-                new_dur = e2.selectbox("Applies", list(feedback.DURATIONS), index=list(feedback.DURATIONS).index(x["duration"]),
-                                       format_func=feedback.DURATIONS.get)
-                s1, s2, _ = st.columns([1, 1, 4])
-                if s1.form_submit_button("Save", type="primary"):
-                    feedback.revise(conn, x["id"], new_text.strip(), new_eff, new_dur)
-                    st.session_state.fb_editing = None; bump(); st.rerun()
-                if s2.form_submit_button("Cancel"):
-                    st.session_state.fb_editing = None; st.rerun()
-            if x["revisions"]:
-                with st.expander(f"Revision history ({len(x['revisions'])})"):
-                    for rv in reversed(x["revisions"]):
-                        at = datetime.fromisoformat(rv["updated_at"]).astimezone().strftime("%b %-d, %-I:%M %p")
-                        st.caption(f'{at} · {feedback.EFFECTS[rv["effect"]][0]} · {feedback.DURATIONS[rv["duration"]]} — “{rv["raw_text"]}”')
-    if removed:
-        with st.expander(f"Removed ({len(removed)})"):
-            for x in removed:
-                fb_card(x)
-                if st.button("Restore", key=f"fb_restore_{x['id']}"):
-                    feedback.set_status(conn, x["id"], "active"); bump(); st.rerun()
-    st.caption("The newest update for a team is the one that counts, so “fixed now” replaces “broken”. Effects scale the "
-               "team's overall score and expected points (match stats are never changed); “Not competing” drops the team "
-               "from pick lists. “Today only” updates expire at midnight.")
+    with st.expander(f"History ({len(items)})" if items else "History"):
+        if not items:
+            st.caption("Nothing posted yet.")
+        for x in items:
+            state = ("removed" if x["status"] == "removed" else "expired" if x["expired"] else "in effect" if x["in_effect"]
+                     else "note" if x["effect"] == "info" else "replaced by a newer update")
+            with st.container(border=True):
+                fb_card(x, state)
+                b1, b2, _ = st.columns([1, 1, 4])
+                if x["status"] == "removed":
+                    if b1.button("Restore", key=f"fb_restore_{x['id']}"):
+                        feedback.set_status(conn, x["id"], "active"); bump(); st.rerun()
+                else:
+                    if b1.button("Edit", key=f"fb_edit_{x['id']}"):
+                        st.session_state.fb_editing = x["id"]
+                    if b2.button("Remove", key=f"fb_rm_{x['id']}"):
+                        feedback.set_status(conn, x["id"], "removed"); bump(); st.rerun()
+                if st.session_state.get("fb_editing") == x["id"]:
+                    with st.form(f"fb_form_{x['id']}"):
+                        new_text = st.text_area("Update text", x["raw_text"])
+                        e1, e2 = st.columns(2)
+                        new_eff = e1.selectbox("What happened", EFFECT_OPTS, index=EFFECT_OPTS.index(x["effect"]),
+                                               format_func=lambda e: feedback.EFFECTS[e][0])
+                        new_dur = e2.selectbox("For how long", list(feedback.DURATIONS),
+                                               index=list(feedback.DURATIONS).index(x["duration"]),
+                                               format_func={"today": "Just today", "until_removed": "Until I clear it"}.get)
+                        s1, s2, _ = st.columns([1, 1, 4])
+                        if s1.form_submit_button("Save", type="primary"):
+                            feedback.revise(conn, x["id"], new_text.strip(), new_eff, new_dur)
+                            st.session_state.fb_editing = None; bump(); st.rerun()
+                        if s2.form_submit_button("Cancel"):
+                            st.session_state.fb_editing = None; st.rerun()
+        st.text_input("Your name (shown on what you post)", key="fb_author", placeholder="Optional")
+        st.caption("If a team has several updates, the newest one counts. Updates never change match results; they "
+                   "adjust the team's rating and expected points.")
 
 
 # --- scouting notes ------------------------------------------------------------

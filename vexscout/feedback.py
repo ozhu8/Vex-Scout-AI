@@ -19,11 +19,11 @@ from .config import MODEL
 # effect -> (label, multiplier on expected points / overall, good?)
 EFFECTS = {
     "out": ("Not competing", 0.0, False),
-    "broken": ("Robot broken", 0.55, False),
+    "broken": ("Robot down", 0.55, False),
     "degraded": ("Having problems", 0.85, False),
     "auton": ("Auton unreliable", 0.92, False),
-    "repaired": ("Fixed / back to normal", 1.0, True),
-    "improved": ("Upgraded / improved", 1.10, True),
+    "repaired": ("Repaired", 1.0, True),
+    "improved": ("Upgraded", 1.10, True),
     "info": ("Note only", 1.0, None),
 }
 Effect = Literal["out", "broken", "degraded", "auton", "repaired", "improved", "info"]
@@ -146,3 +146,22 @@ def current_status(conn, event_id, rows=None):
             cur[r["team_id"]] = dict(id=r["id"], effect=r["effect"], label=label, mult=mult, good=good,
                                      summary=r["summary"], text=r["raw_text"])
     return cur
+
+
+def clear_team(conn, event_id, team_id):
+    """Back to normal: remove every active update for a team (soft delete, restorable from history)."""
+    conn.execute("UPDATE live_feedback SET status='removed', updated_at=? WHERE event_id=? AND team_id=? AND status='active'",
+                 (db.now(), event_id, team_id))
+    conn.commit()
+
+
+# plain-language effect of each kind of update, for the UI
+PLAIN = {
+    "broken": "counts as about half strength",
+    "degraded": "counts as about 85% strength",
+    "auton": "counts as about 92% strength",
+    "repaired": "back to normal",
+    "improved": "counts as about 110% strength",
+    "out": "removed from pick lists and predictions",
+    "info": "note only, no effect on ratings",
+}

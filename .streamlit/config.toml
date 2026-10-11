@@ -1,0 +1,13 @@
+[theme]
+base = "dark"
+primaryColor = "#5B8DEF"
+backgroundColor = "#0D0E12"
+secondaryBackgroundColor = "#1A1C22"
+textColor = "#E8EAED"
+borderColor = "#2A2D35"
+baseRadius = "12px"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+
+[browser]
+gatherUsageStats = false

@@ -20,8 +20,11 @@ MODEL_VERSION = "elo+opr-v1"
 
 # Second opinion for AI reports (Claude drafts, ChatGPT reviews, Claude finalises). Optional.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-6.1-sol").strip()
 
 # Third panel agent (Google Gemini). Optional.
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()  # free tier; "gemini-pro-latest" needs billing
+# Free-tier limits are per model (about 20 requests a day each), so when one runs out or is busy, try the next.
+GEMINI_FALLBACKS = [m.strip() for m in os.getenv(
+    "GEMINI_FALLBACKS", "gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-3.8-flash").split(",") if m.strip()]
