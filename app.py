@@ -28,8 +28,20 @@ def bump():
     st.session_state.data_version += 1
 
 
+def data_stamp(event_id):
+    """Fingerprint of everything ratings depend on. Any change from any device or server
+    (live update, scouting note, refreshed results) changes it, so cached ratings are rebuilt."""
+    return tuple(tuple((db.one(conn, q, (event_id,)) if "?" in q else db.one(conn, q)).values()) for q in (
+        "SELECT count(*), max(updated_at), sum(status='active') FROM live_feedback WHERE event_id=?",
+        "SELECT count(*), max(id), sum(status='active') FROM scouting_observations",
+        "SELECT count(*), sum(scored), max(fetched_at) FROM matches",
+        "SELECT count(*), max(rank) FROM rankings WHERE event_id=?",
+        "SELECT count(*), sum(score) FROM skills",
+    ))
+
+
 @st.cache_resource(max_entries=8)
-def cached_model(event_id, _version, _day):  # _day: "today only" feedback expires at midnight
+def cached_model(event_id, stamp, day):  # no leading underscores: Streamlit only re-runs when these change
     m = predictor.build_model(conn, event_id)
     return m, ratings.rate_event(conn, event_id, m), ml.train(conn, event_id)
 
@@ -191,7 +203,7 @@ if not event:
 
 EID = event["id"]
 with st.spinner("Crunching ratings from this season's matches…"):
-    model, R, ML = cached_model(EID, st.session_state.data_version, datetime.now().date().isoformat())
+    model, R, ML = cached_model(EID, data_stamp(EID), datetime.now().date().isoformat())  # day: "today only" updates expire
 teams = db.event_teams(conn, EID)
 numbers = [t["number"] for t in teams]
 by_number = {t["number"]: t for t in teams}
